@@ -42,6 +42,19 @@ class StarkConfig(object):
         self.model_class = model_class
         self.site = site
 
+    def auto_add(self, model_class, start, end, content='nut'):
+        """
+        自动向数据库添加数据
+        """
+        for num in range(start, end):
+            content_dict = {}
+            for name_or_func in self.list_display:
+                if not isinstance(name_or_func, FunctionType) and not name_or_func == 'id':
+                    content_dict[name_or_func] = '%s%s' % (content, num)
+            form = model_class(content_dict)
+            if form.is_valid():
+                form.save()
+
     def get_order_by(self):
         return self.order_by
 
@@ -68,57 +81,19 @@ class StarkConfig(object):
         return AddModelForm
 
     def changelist_view(self, request):
-        """
-        所有URL的查看列表页面
-        :param request:
-        :return:
-        """
-        queryset = self.model_class.objects.all().order_by(*self.get_order_by())
+        # """
+        # 所有URL的查看列表页面 已解耦到inclusion_tag中的list
+        # :param request:
+        # :return:
+        # """
 
-        # ##### 添加按钮 ######
-        add_btn = self.get_add_btn()
+        # ###############
+        # # 自动添加数据
+        # AddModelForm = self.get_model_form_class()
+        # self.auto_add(AddModelForm, 100, 200)
+        # ###############
 
-        # ##### 作业一：处理表格 #####
-        # inclusion_tag
-        # 生成器
-        list_display = self.list_display
-
-        header_list = []
-        if list_display:
-            for name_or_func in list_display:
-                if isinstance(name_or_func, FunctionType):
-                    verbose_name = name_or_func(self, header=True)
-                else:
-                    verbose_name = self.model_class._meta.get_field(
-                        name_or_func).verbose_name
-                header_list.append(verbose_name)
-        else:
-            header_list.append(self.model_class._meta.model_name)
-
-        body_list = []
-        for row in queryset:
-            # ret = row
-            # print('row', type(ret), ret)
-            row_list = []
-            if not list_display:
-                row_list.append(row)
-                body_list.append(row_list)
-                continue
-            for name_or_func in list_display:
-                if isinstance(name_or_func, FunctionType):
-                    val = name_or_func(self, row=row)
-                else:
-                    val = getattr(row, name_or_func)
-                    # ret = val
-                    # print('getattr(row, name_or_func)', type(ret), ret)
-                row_list.append(val)
-            body_list.append(row_list)
-        ret = header_list
-        print('header_list', type(ret), ret)
-        ret = body_list
-        print('body_list', type(ret), ret)
-
-        return render(request, 'stark/changelist.html', {'header_list': header_list, 'body_list': body_list, 'add_btn': add_btn})
+        return render(request, 'stark/changelist.html', locals())
 
     def add_view(self, request):
         """
@@ -130,13 +105,13 @@ class StarkConfig(object):
         AddModelForm = self.get_model_form_class()
         if request.method == "GET":
             form = AddModelForm()
-            return render(request, 'stark/change.html', {'form': form})
+            return render(request, 'stark/change.html', locals())
 
         form = AddModelForm(request.POST)
         if form.is_valid():
             form.save()
             return redirect(self.reverse_list_url())
-        return render(request, 'stark/change.html', {'form': form})
+        return render(request, 'stark/change.html', locals())
 
     def change_view(self, request, pk):
         """
@@ -199,6 +174,9 @@ class StarkConfig(object):
         return urlpatterns
 
     def extra_url(self):
+        """
+        钩子：拓展url
+        """
         pass
 
     def reverse_list_url(self):
