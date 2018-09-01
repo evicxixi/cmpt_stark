@@ -59,9 +59,15 @@ class StarkConfig(object):
         return self.order_by
 
     def get_list_display(self):
+        """
+        预留钩子 以便其它app的衍生类内可对list_display进行自定义（例如根据当前用户权限）
+        """
         return self.list_display
 
     def get_add_btn(self):
+        """
+        预留钩子 以便其它app的衍生类内可对list_display进行自定义（例如根据当前用户权限）
+        """
         return mark_safe('<a href="%s" class="btn btn-success">添加</a>' % self.reverse_add_url())
 
     def get_model_form_class(self):
