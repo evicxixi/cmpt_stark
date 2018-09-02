@@ -18,3 +18,13 @@ class Depart(models.Model):
 
     def __str__(self):
         return self.name
+
+
+"""
+目标：获取UserInfo表中所有的数据 -> 获取Fk对应的类
+    model_class = Depart
+    _field = "user" 
+    
+    
+
+"""
