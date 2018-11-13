@@ -5,6 +5,129 @@ from django.utils.safestring import mark_safe
 from django.shortcuts import HttpResponse, render, redirect
 from django.urls import reverse
 from django import forms
+from django.db.models import Q
+from django.http import QueryDict
+from django.db.models.fields.related import ForeignKey,ManyToManyField,OneToOneField
+
+class Row(object):
+    def __init__(self,data_list,option,query_dict):
+        """
+        元组
+        :param data_list:元组或queryset
+        """
+        self.data_list = data_list
+        self.option = option
+        self.query_dict = query_dict
+
+    def __iter__(self):
+        yield '<div class="whole">'
+
+        tatal_query_dict = self.query_dict.copy()
+        tatal_query_dict._mutable = True
+
+        origin_value_list = self.query_dict.getlist(self.option.field)  # [2,]
+        if origin_value_list:
+            tatal_query_dict.pop(self.option.field)
+            yield '<a href="?%s">全部</a>' %(tatal_query_dict.urlencode(),)
+        else:
+            yield '<a class="active" href="?%s">全部</a>' %(tatal_query_dict.urlencode(),)
+
+
+        yield '</div>'
+        yield '<div class="others">'
+
+
+        for item in self.data_list: # item=(),queryset中的一个对象
+            val = self.option.get_value(item)
+            text = self.option.get_text(item)
+
+            query_dict = self.query_dict.copy()
+            query_dict._mutable = True
+
+            if not self.option.is_multi: # 单选
+                if str(val) in origin_value_list:
+                    query_dict.pop(self.option.field)
+                    yield '<a class="active" href="?%s">%s</a>' %(query_dict.urlencode(),text)
+                else:
+                    query_dict[self.option.field] = val
+                    yield '<a href="?%s">%s</a>' % (query_dict.urlencode(), text)
+            else: # 多选
+                multi_val_list = query_dict.getlist(self.option.field)
+                if str(val) in origin_value_list:
+                    # 已经选，把自己去掉
+                    multi_val_list.remove(str(val))
+                    query_dict.setlist(self.option.field,multi_val_list)
+                    yield '<a class="active" href="?%s">%s</a>' % (query_dict.urlencode(), text)
+                else:
+                    multi_val_list.append(val)
+                    query_dict.setlist(self.option.field, multi_val_list)
+                    yield '<a href="?%s">%s</a>' % (query_dict.urlencode(), text)
+
+        yield '</div>'
+
+
+class Option(object):
+
+    def __init__(self, field, condition=None, is_choice=False,text_func=None,value_func=None,is_multi=False):
+        self.field = field
+        self.is_choice = is_choice
+        if not condition:
+            condition = {}
+        self.condition = condition
+        self.text_func = text_func
+        self.value_func = value_func
+        self.is_multi = is_multi
+
+    def get_queryset(self, _field, model_class,query_dict):
+        if isinstance(_field, ForeignKey) or isinstance(_field, ManyToManyField):
+            row = Row(_field.rel.model.objects.filter(**self.condition),self,query_dict)
+        else:
+            if self.is_choice:
+                row = Row(_field.choices,self,query_dict)
+            else:
+                row = Row(model_class.objects.filter(**self.condition),self,query_dict)
+        return row
+
+    def get_text(self,item):
+        if self.text_func:
+            return self.text_func(item)
+        return str(item)
+
+    def get_value(self,item):
+        if self.value_func:
+            return self.value_func(item)
+        if self.is_choice:
+            return item[0]
+        return item.pk
+
+
+
+class ChangeList(object):
+    """
+    封装列表页面需要的所有功能
+    """
+
+    def __init__(self, config, queryset, q, search_list, page):
+        self.q = q
+        self.search_list = search_list
+        self.page = page
+
+        self.config = config
+        self.action_list = [{'name': func.__name__, 'text': func.text} for func in config.get_action_list()]
+
+        self.add_btn = config.get_add_btn()
+
+        self.queryset = queryset
+
+        self.list_display = config.get_list_display()
+        self.list_filter = config.get_list_filter()
+
+
+    def gen_list_filter_rows(self):
+
+        for option in self.list_filter:
+            _field = self.config.model_class._meta.get_field(option.field)
+            yield option.get_queryset(_field, self.config.model_class,self.config.request.GET)
 
 
 class StarkConfig(object):
@@ -18,13 +141,15 @@ class StarkConfig(object):
         if header:
             return "编辑"
 
-        return mark_safe('<a href="%s"><i class="fa fa-edit" aria-hidden="true"></i></a></a>' % self.reverse_edit_url(row))
+        return mark_safe(
+            '<a href="%s"><i class="fa fa-edit" aria-hidden="true"></i></a></a>' % self.reverse_edit_url(row))
 
     def display_del(self, row=None, header=False):
         if header:
             return "删除"
 
-        return mark_safe('<a href="%s"><i class="fa fa-trash-o" aria-hidden="true"></i></a>' % self.reverse_del_url(row))
+        return mark_safe(
+            '<a href="%s"><i class="fa fa-trash-o" aria-hidden="true"></i></a>' % self.reverse_del_url(row))
 
     def display_edit_del(self, row=None, header=False):
         if header:
@@ -34,40 +159,39 @@ class StarkConfig(object):
         """ % (self.reverse_edit_url(row), self.reverse_del_url(row),)
         return mark_safe(tpl)
 
+    def multi_delete(self, request):
+        """
+        批量删除的action
+        :param request:
+        :return:
+        """
+        pk_list = request.POST.getlist('pk')
+        self.model_class.objects.filter(pk__in=pk_list).delete()
+        # return HttpResponse('删除成功')
+
+    multi_delete.text = "批量删除"
+
     order_by = []
     list_display = []
     model_form_class = None
+    action_list = []
+    search_list = []
+    list_filter = []
 
     def __init__(self, model_class, site):
         self.model_class = model_class
         self.site = site
+        self.request = None
 
-    def auto_add(self, model_class, start, end, content='nut'):
-        """
-        自动向数据库添加数据
-        """
-        for num in range(start, end):
-            content_dict = {}
-            for name_or_func in self.list_display:
-                if not isinstance(name_or_func, FunctionType) and not name_or_func == 'id':
-                    content_dict[name_or_func] = '%s%s' % (content, num)
-            form = model_class(content_dict)
-            if form.is_valid():
-                form.save()
+        self.back_condition_key = "_filter"
 
     def get_order_by(self):
         return self.order_by
 
     def get_list_display(self):
-        """
-        预留钩子 以便其它app的衍生类内可对list_display进行自定义（例如根据当前用户权限）
-        """
         return self.list_display
 
     def get_add_btn(self):
-        """
-        预留钩子 以便其它app的衍生类内可对list_display进行自定义（例如根据当前用户权限）
-        """
         return mark_safe('<a href="%s" class="btn btn-success">添加</a>' % self.reverse_add_url())
 
     def get_model_form_class(self):
@@ -79,27 +203,96 @@ class StarkConfig(object):
             return self.model_form_class
 
         class AddModelForm(forms.ModelForm):
-
             class Meta:
                 model = self.model_class
                 fields = "__all__"
 
         return AddModelForm
 
+    def get_action_list(self):
+        val = []
+        val.extend(self.action_list)
+        return val
+
+    def get_action_dict(self):
+        val = {}
+        for item in self.action_list:
+            val[item.__name__] = item
+        return val
+
+    def get_search_list(self):
+        val = []
+        val.extend(self.search_list)
+        return val
+
+    def get_search_condition(self, request):
+        search_list = self.get_search_list()  # ['name','tel']
+        q = request.GET.get('q', "")  # ‘大’
+        con = Q()
+        con.connector = "OR"
+        if q:
+            for field in search_list:
+                con.children.append(('%s__contains' % field, q))
+
+        return search_list, q, con
+
+    def get_list_filter(self):
+        val = []
+        val.extend(self.list_filter)
+        return val
+
+    def get_list_filter_condition(self):
+        comb_condition = {}
+        for option in self.get_list_filter():
+            element = self.request.GET.getlist(option.field)
+            if element:
+                comb_condition['%s__in' % option.field] = element
+
+        return comb_condition
+
     def changelist_view(self, request):
-        # """
-        # 所有URL的查看列表页面 已解耦到inclusion_tag中的list
-        # :param request:
-        # :return:
-        # """
+        """
+        所有URL的查看列表页面
+        :param request:
+        :return:
+        """
 
-        # ###############
-        # # 自动添加数据
-        # AddModelForm = self.get_model_form_class()
-        # self.auto_add(AddModelForm, 100, 200)
-        # ###############
+        if request.method == 'POST':
+            action_name = request.POST.get('action')
+            action_dict = self.get_action_dict()
+            if action_name not in action_dict:
+                return HttpResponse('非法请求')
 
-        return render(request, 'stark/changelist.html', locals())
+            response = getattr(self, action_name)(request)
+            if response:
+                return response
+
+        # ##### 处理搜索 #####
+        search_list, q, con = self.get_search_condition(request)
+
+        # ##### 处理分页 #####
+        from stark.utils.pagination import Pagination
+
+        total_count = self.model_class.objects.filter(con).count()
+
+        query_params = request.GET.copy()
+        query_params._mutable = True
+        page = Pagination(request.GET.get('page'), total_count, request.path_info, query_params, per_page=7)
+
+        list_filter = self.get_list_filter()
+        # 获取组合搜索筛选
+        queryset = self.model_class.objects.filter(con).filter(**self.get_list_filter_condition()).order_by(*self.get_order_by()).distinct()[page.start:page.end]
+
+        cl = ChangeList(self, queryset, q, search_list, page)
+
+        # ######## 组合搜索 #########
+        # list_filter = ['name','user']
+
+
+        context = {
+            'cl': cl
+        }
+        return render(request, 'stark/changelist.html', context)
 
     def add_view(self, request):
         """
@@ -111,13 +304,13 @@ class StarkConfig(object):
         AddModelForm = self.get_model_form_class()
         if request.method == "GET":
             form = AddModelForm()
-            return render(request, 'stark/change.html', locals())
+            return render(request, 'stark/change.html', {'form': form})
 
         form = AddModelForm(request.POST)
         if form.is_valid():
             form.save()
             return redirect(self.reverse_list_url())
-        return render(request, 'stark/change.html', locals())
+        return render(request, 'stark/change.html', {'form': form})
 
     def change_view(self, request, pk):
         """
@@ -155,8 +348,9 @@ class StarkConfig(object):
 
     def wrapper(self, func):
         @functools.wraps(func)
-        def inner(*args, **kwargs):
-            return func(*args, **kwargs)
+        def inner(request, *args, **kwargs):
+            self.request = request
+            return func(request, *args, **kwargs)
 
         return inner
 
@@ -164,13 +358,10 @@ class StarkConfig(object):
         info = self.model_class._meta.app_label, self.model_class._meta.model_name
 
         urlpatterns = [
-            url(r'^list/$', self.wrapper(self.changelist_view),
-                name='%s_%s_changelist' % info),
+            url(r'^list/$', self.wrapper(self.changelist_view), name='%s_%s_changelist' % info),
             url(r'^add/$', self.wrapper(self.add_view), name='%s_%s_add' % info),
-            url(r'^(?P<pk>\d+)/change/', self.wrapper(self.change_view),
-                name='%s_%s_change' % info),
-            url(r'^(?P<pk>\d+)/del/', self.wrapper(self.delete_view),
-                name='%s_%s_del' % info),
+            url(r'^(?P<pk>\d+)/change/', self.wrapper(self.change_view), name='%s_%s_change' % info),
+            url(r'^(?P<pk>\d+)/del/', self.wrapper(self.delete_view), name='%s_%s_del' % info),
         ]
 
         extra = self.extra_url()
@@ -180,9 +371,6 @@ class StarkConfig(object):
         return urlpatterns
 
     def extra_url(self):
-        """
-        钩子：拓展url
-        """
         pass
 
     def reverse_list_url(self):
@@ -191,6 +379,12 @@ class StarkConfig(object):
         namespace = self.site.namespace
         name = '%s:%s_%s_changelist' % (namespace, app_label, model_name)
         list_url = reverse(name)
+
+        origin_condition = self.request.GET.get(self.back_condition_key)
+        if not origin_condition:
+            return list_url
+
+        list_url = "%s?%s" % (list_url, origin_condition,)
         return list_url
 
     def reverse_add_url(self):
@@ -199,6 +393,14 @@ class StarkConfig(object):
         namespace = self.site.namespace
         name = '%s:%s_%s_add' % (namespace, app_label, model_name)
         add_url = reverse(name)
+
+        if not self.request.GET:
+            return add_url
+        param_str = self.request.GET.urlencode()  # q=嘉瑞&page=2
+        new_query_dict = QueryDict(mutable=True)
+        new_query_dict[self.back_condition_key] = param_str
+        add_url = "%s?%s" % (add_url, new_query_dict.urlencode(),)
+
         return add_url
 
     def reverse_edit_url(self, row):
@@ -207,6 +409,14 @@ class StarkConfig(object):
         namespace = self.site.namespace
         name = '%s:%s_%s_change' % (namespace, app_label, model_name)
         edit_url = reverse(name, kwargs={'pk': row.pk})
+
+        if not self.request.GET:
+            return edit_url
+        param_str = self.request.GET.urlencode()  # q=嘉瑞&page=2
+        new_query_dict = QueryDict(mutable=True)
+        new_query_dict[self.back_condition_key] = param_str
+        edit_url = "%s?%s" % (edit_url, new_query_dict.urlencode(),)
+
         return edit_url
 
     def reverse_del_url(self, row):
@@ -215,6 +425,14 @@ class StarkConfig(object):
         namespace = self.site.namespace
         name = '%s:%s_%s_del' % (namespace, app_label, model_name)
         del_url = reverse(name, kwargs={'pk': row.pk})
+
+        if not self.request.GET:
+            return del_url
+        param_str = self.request.GET.urlencode()  # q=嘉瑞&page=2
+        new_query_dict = QueryDict(mutable=True)
+        new_query_dict[self.back_condition_key] = param_str
+        del_url = "%s?%s" % (del_url, new_query_dict.urlencode(),)
+
         return del_url
 
     @property
@@ -223,7 +441,6 @@ class StarkConfig(object):
 
 
 class AdminSite(object):
-
     def __init__(self):
         self._registry = {}
         self.app_name = 'stark'
@@ -254,17 +471,14 @@ class AdminSite(object):
 
         for k, v in self._registry.items():
             # k=modes.UserInfo,v=StarkConfig(models.UserInfo), # 封装：model_class=UserInfo，site=site对象
-            # k=modes.Role,v=RoleConfig(models.Role)           #
-            # 封装：model_class=Role，site=site对象
+            # k=modes.Role,v=RoleConfig(models.Role)           # 封装：model_class=Role，site=site对象
             app_label = k._meta.app_label
             model_name = k._meta.model_name
-            urlpatterns.append(
-                url(r'^%s/%s/' % (app_label, model_name,), (v.urls, None, None)))
+            urlpatterns.append(url(r'^%s/%s/' % (app_label, model_name,), (v.urls, None, None)))
         return urlpatterns
 
     @property
     def urls(self):
-        # 返回一个元组 包含三个值 替代路由继承中的include()
         return self.get_urls(), self.app_name, self.namespace
 
 

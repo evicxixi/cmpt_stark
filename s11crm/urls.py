@@ -22,4 +22,6 @@ urlpatterns = [
     url(r'^admin/', admin.site.urls),
     url(r'^stark/', site.urls),
     url(r'^test/', views.test),
+    url(r'^add_stu/', views.add_stu),
+    url(r'^fk_queryset/', views.get_fk_queryset),
 ]
